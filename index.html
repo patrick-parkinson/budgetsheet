@@ -260,10 +260,31 @@
     pointer-events:none;
   }
   .status.show{opacity:1;}
+
+  .storage-warning{
+    display:none;
+    background:var(--rust-soft);
+    color:var(--rust);
+    border:1px solid var(--rust);
+    border-radius:6px;
+    padding:10px 14px;
+    font-size:13px;
+    margin-bottom:18px;
+    max-width:760px;
+    margin-left:auto;
+    margin-right:auto;
+  }
+  .storage-warning.show{display:block;}
 </style>
 </head>
 <body>
 <div class="wrap">
+  <div class="storage-warning" id="storageWarning">
+    Your browser is blocking saved data on this page (common in private/incognito
+    mode, or with strict tracking-prevention settings). Entries will work during
+    this visit but won't be here next time — try a normal browser window/tab.
+  </div>
+
   <header>
     <h1>Paycheck Ledger</h1>
     <p class="sub">Biweekly income, monthly bills, and account balances.</p>
@@ -345,6 +366,21 @@
 
 <script>
 const STORE_KEY = 'ledger:v1';
+
+function storageAvailable(){
+  // window.storage (Claude artifact viewer) counts as available if present.
+  if (typeof window.storage !== 'undefined' && window.storage) return true;
+  // Otherwise, actually test localStorage rather than assuming it works -
+  // private/incognito modes and strict tracking prevention can make it throw.
+  try{
+    const testKey = '__storage_test__';
+    localStorage.setItem(testKey, '1');
+    localStorage.removeItem(testKey);
+    return true;
+  }catch(e){
+    return false;
+  }
+}
 let state = {
   paycheckAmt: 1300,
   paychecksPerMonth: 2,
@@ -376,6 +412,9 @@ function fmt(n){
 }
 
 async function load(){
+  if (!storageAvailable()) {
+    document.getElementById('storageWarning').classList.add('show');
+  }
   try{
     let raw = null;
     if (typeof window.storage !== 'undefined' && window.storage) {
