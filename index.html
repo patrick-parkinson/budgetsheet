@@ -275,6 +275,88 @@
     margin-right:auto;
   }
   .storage-warning.show{display:block;}
+
+  .sync-panel{
+    max-width:760px;
+    margin:0 auto 20px;
+    background:var(--card);
+    border:1px solid var(--line);
+    border-radius:8px;
+    overflow:hidden;
+  }
+  .sync-header{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding:12px 16px;
+    cursor:pointer;
+    font-size:13.5px;
+    font-weight:600;
+  }
+  .sync-status{
+    font-weight:400;
+    font-size:12px;
+    color:var(--ink-soft);
+    padding:3px 10px;
+    border-radius:20px;
+    background:var(--paper);
+  }
+  .sync-status.ok{color:var(--green);background:var(--green-soft);}
+  .sync-status.err{color:var(--rust);background:var(--rust-soft);}
+  .sync-body{
+    display:none;
+    padding:0 16px 16px;
+    border-top:1px solid var(--line);
+  }
+  .sync-body.show{display:block;}
+  .sync-help{
+    font-size:12.5px;
+    color:var(--ink-soft);
+    line-height:1.5;
+    margin:12px 0;
+  }
+  .sync-help a{color:var(--green);}
+  .sync-row{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-bottom:10px;
+  }
+  .sync-row label{
+    font-size:12.5px;
+    color:var(--ink-soft);
+    width:56px;
+    flex-shrink:0;
+  }
+  .sync-row input{
+    flex:1;
+    font-family:'IBM Plex Mono', ui-monospace, monospace;
+    font-size:13px;
+    border:1px solid var(--line);
+    border-radius:5px;
+    padding:6px 8px;
+    background:var(--paper);
+    color:var(--ink);
+    min-width:0;
+  }
+  .sync-row input:focus{outline:none;border-color:var(--green);}
+  .sync-actions{display:flex;gap:10px;margin-top:4px;}
+  .sync-btn{
+    border:1px solid var(--line);
+    background:var(--card);
+    color:var(--ink-soft);
+    font-size:12.5px;
+    padding:7px 14px;
+    border-radius:5px;
+    cursor:pointer;
+  }
+  .sync-btn.primary{
+    background:var(--green);
+    border-color:var(--green);
+    color:#fff;
+    font-weight:600;
+  }
+  .sync-btn:hover{opacity:0.85;}
 </style>
 </head>
 <body>
@@ -283,6 +365,33 @@
     Your browser is blocking saved data on this page (common in private/incognito
     mode, or with strict tracking-prevention settings). Entries will work during
     this visit but won't be here next time — try a normal browser window/tab.
+  </div>
+
+  <div class="sync-panel" id="syncPanel">
+    <div class="sync-header" id="syncToggle">
+      <span>☁ Cloud sync (view on other devices)</span>
+      <span class="sync-status" id="syncStatus">Not connected</span>
+    </div>
+    <div class="sync-body" id="syncBody">
+      <p class="sync-help">
+        Uses a private GitHub Gist as shared storage. Create a token at
+        <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener">github.com/settings/tokens</a>
+        scoped to <strong>Gists: Read and write</strong> only, paste it below, then click Connect.
+        Paste the same token and Gist ID on your other device to see the same data there.
+      </p>
+      <div class="sync-row">
+        <label>Token</label>
+        <input type="password" id="syncToken" placeholder="github_pat_...">
+      </div>
+      <div class="sync-row">
+        <label>Gist ID</label>
+        <input type="text" id="syncGistId" placeholder="leave blank to create a new one">
+      </div>
+      <div class="sync-actions">
+        <button type="button" class="sync-btn primary" id="syncConnect">Connect</button>
+        <button type="button" class="sync-btn" id="syncDisconnect">Disconnect this device</button>
+      </div>
+    </div>
   </div>
 
   <header>
@@ -366,6 +475,78 @@
 
 <script>
 const STORE_KEY = 'ledger:v1';
+const SYNC_CFG_KEY = 'ledger:sync-config';
+const GIST_FILENAME = 'paycheck-ledger-data.json';
+
+function getSyncConfig(){
+  try{
+    const raw = localStorage.getItem(SYNC_CFG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  }catch(e){ return null; }
+}
+function setSyncConfig(cfg){
+  try{ localStorage.setItem(SYNC_CFG_KEY, JSON.stringify(cfg)); }catch(e){}
+}
+function clearSyncConfig(){
+  try{ localStorage.removeItem(SYNC_CFG_KEY); }catch(e){}
+}
+
+function setSyncStatus(text, kind){
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('ok','err');
+  if (kind) el.classList.add(kind);
+}
+
+async function fetchFromGist(cfg){
+  const res = await fetch(`https://api.github.com/gists/${cfg.gistId}`, {
+    headers: {
+      'Authorization': `Bearer ${cfg.token}`,
+      'Accept': 'application/vnd.github+json'
+    }
+  });
+  if (!res.ok) throw new Error('GitHub API ' + res.status);
+  const json = await res.json();
+  const file = json.files && json.files[GIST_FILENAME];
+  if (!file) return null;
+  return JSON.parse(file.content);
+}
+
+async function pushToGist(cfg, payloadObj){
+  const res = await fetch(`https://api.github.com/gists/${cfg.gistId}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${cfg.token}`,
+      'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      files: { [GIST_FILENAME]: { content: JSON.stringify(payloadObj) } }
+    })
+  });
+  if (!res.ok) throw new Error('GitHub API ' + res.status);
+  return res.json();
+}
+
+async function createGist(cfg, payloadObj){
+  const res = await fetch('https://api.github.com/gists', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${cfg.token}`,
+      'Accept': 'application/vnd.github+json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      description: 'Paycheck Ledger data (auto-managed, do not rename the file)',
+      public: false,
+      files: { [GIST_FILENAME]: { content: JSON.stringify(payloadObj) } }
+    })
+  });
+  if (!res.ok) throw new Error('GitHub API ' + res.status);
+  const json = await res.json();
+  return json.id;
+}
 
 function storageAvailable(){
   // window.storage (Claude artifact viewer) counts as available if present.
@@ -445,6 +626,31 @@ async function load(){
   }catch(e){
     // no saved data yet, use defaults
   }
+
+  const cfg = getSyncConfig();
+  if (cfg && cfg.token && cfg.gistId) {
+    document.getElementById('syncToken').value = cfg.token;
+    document.getElementById('syncGistId').value = cfg.gistId;
+    setSyncStatus('Syncing…');
+    try{
+      const remote = await fetchFromGist(cfg);
+      if (remote) {
+        state = remote.state;
+        nextBillId = remote.nextBillId || nextBillId;
+        nextExtraId = remote.nextExtraId || nextExtraId;
+        nextTxnId = remote.nextTxnId || nextTxnId;
+        if (state.accounts) {
+          state.accounts.forEach(acct=>{
+            acct.transactions.forEach((t, idx)=>{ t.id = idx + 1; });
+          });
+        }
+      }
+      setSyncStatus('Connected', 'ok');
+    }catch(e){
+      setSyncStatus('Sync error — check token/ID', 'err');
+    }
+  }
+
   render();
 }
 
@@ -471,6 +677,17 @@ async function saveNow(){
     const el = document.getElementById('status');
     el.classList.add('show');
     setTimeout(()=>el.classList.remove('show'), 1200);
+  }
+
+  const cfg = getSyncConfig();
+  if (cfg && cfg.token && cfg.gistId) {
+    setSyncStatus('Syncing…');
+    try{
+      await pushToGist(cfg, {state, nextBillId, nextExtraId, nextTxnId});
+      setSyncStatus('Connected', 'ok');
+    }catch(e){
+      setSyncStatus('Sync error — check token/ID', 'err');
+    }
   }
 }
 
@@ -694,6 +911,57 @@ document.getElementById('addBill').addEventListener('click', ()=>{
 document.getElementById('addExtra').addEventListener('click', ()=>{
   state.extras.push({id: nextExtraId++, name:'New category', amount:0, check:'both'});
   renderExtras(); renderSummary(); save();
+});
+
+document.getElementById('syncToggle').addEventListener('click', ()=>{
+  document.getElementById('syncBody').classList.toggle('show');
+});
+
+document.getElementById('syncConnect').addEventListener('click', async ()=>{
+  const token = document.getElementById('syncToken').value.trim();
+  const gistIdInput = document.getElementById('syncGistId').value.trim();
+  if (!token) {
+    setSyncStatus('Enter a token first', 'err');
+    return;
+  }
+  setSyncStatus('Connecting…');
+  const cfg = { token, gistId: gistIdInput };
+  try{
+    if (!gistIdInput) {
+      // No gist yet - create one seeded with whatever is currently on this device.
+      const newId = await createGist(cfg, {state, nextBillId, nextExtraId, nextTxnId});
+      cfg.gistId = newId;
+      document.getElementById('syncGistId').value = newId;
+      setSyncConfig(cfg);
+      setSyncStatus('Connected (new gist created)', 'ok');
+    } else {
+      // Existing gist - pull its data down as the source of truth.
+      const remote = await fetchFromGist(cfg);
+      setSyncConfig(cfg);
+      if (remote) {
+        state = remote.state;
+        nextBillId = remote.nextBillId || nextBillId;
+        nextExtraId = remote.nextExtraId || nextExtraId;
+        nextTxnId = remote.nextTxnId || nextTxnId;
+        if (state.accounts) {
+          state.accounts.forEach(acct=>{
+            acct.transactions.forEach((t, idx)=>{ t.id = idx + 1; });
+          });
+        }
+        render();
+      }
+      setSyncStatus('Connected', 'ok');
+    }
+  }catch(e){
+    setSyncStatus('Connection failed — check token/ID', 'err');
+  }
+});
+
+document.getElementById('syncDisconnect').addEventListener('click', ()=>{
+  clearSyncConfig();
+  document.getElementById('syncToken').value = '';
+  document.getElementById('syncGistId').value = '';
+  setSyncStatus('Not connected');
 });
 
 load();
